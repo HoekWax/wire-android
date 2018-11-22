@@ -25,10 +25,8 @@ import com.waz.ZLog._
 import com.waz.api.{ContentSearchQuery, IConversation, Message, TypeFilter}
 import com.waz.model._
 import com.waz.service.ZMessaging
-import com.waz.threading.SerialDispatchQueue
-import com.waz.utils.events.{EventStream, Signal, SourceSignal}
+import com.waz.utils.events._
 import com.waz.zclient.collection.controllers.CollectionController.CollectionInfo
-import com.waz.zclient.controllers.collections.CollectionsObserver
 import com.waz.zclient.conversation.ConversationController
 import com.waz.zclient.{Injectable, Injector}
 
@@ -36,33 +34,22 @@ class CollectionController(implicit injector: Injector) extends Injectable {
 
   private implicit val tag: LogTag = logTagFor[CollectionController]
 
-  private implicit val dispatcher = new SerialDispatchQueue(name = "CollectionController")
+  private lazy val zms = inject[Signal[ZMessaging]]
+  private lazy val convController = inject[ConversationController]
 
-  val zms = inject[Signal[ZMessaging]]
-
-  lazy val convController = inject[ConversationController]
-
-  val msgStorage = zms.map(_.messagesStorage)
-
-  val assetStorage = zms.map(_.assetsStorage)
-
-  private var observers = Set.empty[CollectionsObserver]
-
-  //val conversation = zms.zip(currentConv) flatMap { case (zms, convId) => zms.convsStorage.signal(convId) }
-
-  lazy val conversationName = convController.currentConv map (data => if (data.convType == IConversation.Type.GROUP) data.name.filter(!_.isEmpty).getOrElse(data.generatedName) else data.generatedName)
-
+  val conversationName: Signal[Name] = convController.currentConv.map { data =>
+    if (data.convType == IConversation.Type.GROUP)
+      data.name.filter(!_.isEmpty).getOrElse(data.generatedName)
+    else
+      data.generatedName
+  }
   val focusedItem: SourceSignal[Option[MessageData]] = Signal(None)
+  val openedCollection: SourceSignal[Option[CollectionInfo]] = Signal[Option[CollectionInfo]]()
+  val contentSearchQuery: SourceSignal[ContentSearchQuery] = Signal[ContentSearchQuery](ContentSearchQuery.empty)
+  val onCollectionOpen: SourceStream[Unit] = EventStream[Unit]
+  val onCollectionClosed: SourceStream[Unit] = EventStream[Unit]
 
-  val openedCollection = Signal[Option[CollectionInfo]]()
-
-  val openContextMenuForMessage = EventStream[MessageData]()
-
-  val clickedMessage = EventStream[MessageData]()
-
-  val contentSearchQuery = Signal[ContentSearchQuery](ContentSearchQuery.empty)
-
-  lazy val matchingTextSearchMessages = for {
+  val matchingTextSearchMessages: Signal[Set[MessageId]] = for {
     z <- zms
     convId <- convController.currentConvId
     query <- contentSearchQuery
@@ -70,15 +57,11 @@ class CollectionController(implicit injector: Injector) extends Injectable {
            else Signal future z.messagesIndexStorage.matchingMessages(query, Some(convId))
   } yield res
 
-  def openCollection() = observers foreach { _.openCollection() }
+  def openCollection(): Unit = onCollectionOpen ! {()}
 
-  def closeCollection() = { observers foreach { _.closeCollection() }; openedCollection ! None }
+  def closeCollection(): Unit = onCollectionClosed ! {()}
 
-  def addObserver(collectionsObserver: CollectionsObserver): Unit = observers += collectionsObserver
-
-  def removeObserver(collectionsObserver: CollectionsObserver): Unit = observers -= collectionsObserver
-
-  def clearSearch() = {
+  def clearSearch(): Unit = {
     focusedItem ! None
     contentSearchQuery ! ContentSearchQuery.empty
   }
@@ -94,35 +77,37 @@ object CollectionController {
   case class CollectionInfo(conversation: ConversationData, empty: Boolean)
 
   trait ContentType {
-    val msgTypes: Seq[Message.Type]
-    val typeFilter: Seq[TypeFilter]
-  }
+    val msgType: Message.Type
+    val previewCount: Int
 
-  case object Links extends ContentType {
-    override val msgTypes = Seq(Message.Type.RICH_MEDIA)
-    override val typeFilter: Seq[TypeFilter] = Seq(TypeFilter(Message.Type.RICH_MEDIA, None))
+    lazy val contentFilter: TypeFilter = TypeFilter(msgType)
+    lazy val previewFilter: TypeFilter = TypeFilter(msgType, Some(previewCount))
   }
 
   case object Images extends ContentType {
-    override val msgTypes = Seq(Message.Type.ASSET)
-    override val typeFilter: Seq[TypeFilter] = Seq(TypeFilter(Message.Type.ASSET, None))
+    override val msgType = Message.Type.ASSET
+    override val previewCount: Int = 8
   }
-
-  //Now we can add more types to this sequence for the "others" category
   case object Files extends ContentType {
-    override val msgTypes = Seq(Message.Type.ANY_ASSET)
-    override val typeFilter: Seq[TypeFilter] = Seq(TypeFilter(Message.Type.ANY_ASSET, None))
+    override val msgType = Message.Type.ANY_ASSET
+    override val previewCount: Int = 3
+  }
+  case object Links extends ContentType {
+    override val msgType = Message.Type.RICH_MEDIA
+    override val previewCount: Int = 3
   }
 
-  case object AllContent extends ContentType {
-    //feels a little bit messy... maybe think of a neater way to represent the types
-    override val msgTypes = Images.msgTypes ++ Files.msgTypes ++ Links.msgTypes
-    override val typeFilter: Seq[TypeFilter] = Seq(
-      TypeFilter(Message.Type.ASSET, Some(8)),
-      TypeFilter(Message.Type.RICH_MEDIA, Some(3)),
-      TypeFilter(Message.Type.ANY_ASSET, Some(3))
-    )
+  trait CollectionSection {
+    val totalCount: Int
   }
+
+  case class AllSections(sections: Seq[SingleSection], totalCount: Int) extends CollectionSection {
+    val previewFilters: Seq[TypeFilter] = sections.map(_.contentType.previewFilter)
+  }
+
+  case class SingleSection(contentType: ContentType, totalCount: Int) extends CollectionSection
+
+  val SectionsContent: Seq[ContentType] = Seq(Images, Links, Files)
 }
 
 object CollectionUtils {

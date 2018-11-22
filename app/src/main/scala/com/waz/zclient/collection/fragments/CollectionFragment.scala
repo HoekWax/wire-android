@@ -20,31 +20,35 @@ package com.waz.zclient.collection.fragments
 import android.content.Context
 import android.os.Bundle
 import android.support.v4.app.FragmentManager
-import android.support.v7.widget.RecyclerView.State
-import android.support.v7.widget.{LinearLayoutManager, RecyclerView, Toolbar}
-import android.text.{Editable, TextWatcher}
-import android.view.View.{OnClickListener, OnFocusChangeListener, OnLayoutChangeListener}
+import android.support.v7.widget.{GridLayoutManager, LinearLayoutManager, RecyclerView, Toolbar}
+import android.view.View.{OnClickListener, OnFocusChangeListener, OnLayoutChangeListener, OnTouchListener}
 import android.view._
 import android.view.inputmethod.EditorInfo
+import android.widget.TextView
 import android.widget.TextView.OnEditorActionListener
-import android.widget.{EditText, TextView}
+import com.waz.ZLog
 import com.waz.ZLog._
 import com.waz.api.{ContentSearchQuery, Message}
+import com.waz.model.Dim2
 import com.waz.threading.Threading
-import com.waz.utils.events.Signal
-import com.waz.zclient.collection.adapters.CollectionAdapter.AdapterState
+import com.waz.utils.events.{Signal, SourceSignal}
+import com.waz.utils.returning
+import com.waz.zclient.collection.CollectionPagedListController.CollectionPagedListData
 import com.waz.zclient.collection.adapters.{CollectionAdapter, SearchAdapter}
+import com.waz.zclient.collection.adapters.CollectionAdapter._
 import com.waz.zclient.collection.controllers.CollectionController
-import com.waz.zclient.collection.controllers.CollectionController.AllContent
+import com.waz.zclient.collection.controllers.CollectionController._
 import com.waz.zclient.collection.views.CollectionRecyclerView
+import com.waz.zclient.collection.{CollectionItemDecorator, CollectionPagedListController, CollectionSpanSizeLookup}
 import com.waz.zclient.common.controllers.global.AccentColorController
 import com.waz.zclient.messages.MessageBottomSheetDialog.MessageAction
+import com.waz.zclient.messages.PagedListWrapper
 import com.waz.zclient.messages.controllers.MessageActionsController
 import com.waz.zclient.pages.BaseFragment
 import com.waz.zclient.ui.text.{GlyphTextView, TypefaceEditText, TypefaceTextView}
 import com.waz.zclient.ui.theme.ThemeUtils
 import com.waz.zclient.ui.utils.KeyboardUtils
-import com.waz.zclient.utils.{RichView, ViewUtils}
+import com.waz.zclient.utils.{RichTextView, RichView}
 import com.waz.zclient.{FragmentHelper, R}
 import org.threeten.bp.{LocalDateTime, ZoneId}
 
@@ -54,15 +58,296 @@ class CollectionFragment extends BaseFragment[CollectionFragment.Container] with
 
   private implicit val tag: LogTag = logTagFor[CollectionFragment]
 
-  lazy val controller = inject[CollectionController]
-  lazy val messageActionsController = inject[MessageActionsController]
-  lazy val accentColorController = inject[AccentColorController]
-  var collectionAdapter: CollectionAdapter = null
-  var searchAdapter: SearchAdapter = null
+  private lazy val collectionController = inject[CollectionController]
+  private lazy val messageActionsController = inject[MessageActionsController]
+  private lazy val accentColorController = inject[AccentColorController]
+  private lazy val collectionPagedListController = inject[CollectionPagedListController]
+  private lazy val viewDim: SourceSignal[Dim2] = Signal[Dim2](Dim2(0, 0))
 
-  override def onDestroy(): Unit = {
-    if (collectionAdapter != null) collectionAdapter.closeCursors()
-    super.onDestroy()
+  private lazy val layoutChangeListener = new OnLayoutChangeListener {
+    override def onLayoutChange(v: View, l: Int, t: Int, r: Int, b: Int, ol: Int, ot: Int, or: Int, ob: Int): Unit =  {
+      viewDim ! Dim2(r - l, b - t)
+    }
+  }
+
+  private lazy val collectionAdapter: CollectionAdapter = new CollectionAdapter()
+  private lazy val collectionItemDecorator = new CollectionItemDecorator(collectionAdapter, CollectionController.GridColumns)
+  private lazy val collectionSpanSizeLookup = new CollectionSpanSizeLookup(CollectionController.GridColumns, collectionAdapter)
+
+  private var searchAdapter: SearchAdapter = null
+
+  private lazy val collectionState = Signal(
+    collectionPagedListController.pagedListData,
+    collectionController.focusedItem,
+    collectionController.contentSearchQuery)
+
+  private lazy val name = returning(view[TextView](R.id.tv__collection_toolbar__name)) { vh =>
+    collectionController.conversationName.onUi { text =>
+      vh.foreach(_.setText(text))
+    }
+  }
+  private lazy val timestamp = returning(view[TextView](R.id.tv__collection_toolbar__timestamp)) { vh =>
+    collectionController.focusedItem.onUi {
+      case Some(messageData) =>
+        vh.foreach { v =>
+          v.setVisibility(View.VISIBLE)
+          v.setText(LocalDateTime.ofInstant(messageData.time.instant, ZoneId.systemDefault()).toLocalDate.toString)
+        }
+      case _ =>
+        vh.foreach(_.setVisibility(View.GONE))
+    }
+  }
+  private lazy val emptyView = returning(view[View](R.id.ll__collection__empty)) { vh =>
+    collectionState.map {
+      case (CollectionPagedListData(AllSections(_, 0), _), None, ContentSearchQuery(q)) if q.isEmpty => true
+      case _ => false
+    }.onUi(visible => vh.foreach(_.setVisible(visible)))
+  }
+  private lazy val toolbar = returning (view[Toolbar](R.id.t_toolbar)) { vh =>
+
+    def setNavigationIconVisibility(visible: Boolean): Unit = vh.foreach { v =>
+      if (visible && ThemeUtils.isDarkTheme(getContext)) {
+        v.setNavigationIcon(R.drawable.action_back_light)
+      } else if (visible) {
+        v.setNavigationIcon(R.drawable.action_back_dark)
+      } else {
+        v.setNavigationIcon(null)
+      }
+    }
+
+    collectionPagedListController.contentType.onUi {
+      case None =>
+        setNavigationIconVisibility(false)
+      case _ =>
+        setNavigationIconVisibility(true)
+    }
+  }
+  private lazy val searchBoxView = returning(view[TypefaceEditText](R.id.search_box)) { vh =>
+    accentColorController.accentColor.map(_.color).onUi { color =>
+      vh.foreach(_.setAccentColor(color))
+    }
+
+  }
+  private lazy val searchBoxClose = returning(view[GlyphTextView](R.id.search_close)) { vh =>
+    vh.onClick { _ =>
+      searchBoxView.foreach(_.setText(""))
+      searchBoxView.foreach(_.clearFocus())
+      searchBoxHint.foreach(_.setVisibility(View.VISIBLE))
+      KeyboardUtils.closeKeyboardIfShown(getActivity)
+    }
+  }
+  private lazy val searchBoxHint = view[TypefaceTextView](R.id.search_hint)
+  private lazy val noSearchResultsText = view[TypefaceTextView](R.id.no_search_results)
+
+  private lazy val collectionRecyclerView = returning(view[CollectionRecyclerView](R.id.collection_list)) { vh =>
+    collectionState.map {
+      case (CollectionPagedListData(s: CollectionSection, _), None, ContentSearchQuery(q)) if q.isEmpty && s.totalCount > 0 => true
+      case _ => false
+    }.onUi(visible => vh.foreach(_.setVisible(visible)))
+  }
+  private lazy val searchRecyclerView = returning(view[RecyclerView](R.id.search_results_list)) { vh =>
+    collectionController.contentSearchQuery.map(_.originalString.nonEmpty)
+      .onUi(visible => vh.foreach(_.setVisible(visible)))
+  }
+
+  override def onCreate(savedInstanceState: Bundle): Unit = {
+    super.onCreate(savedInstanceState)
+    if (savedInstanceState == null) {
+      collectionPagedListController.contentType ! None
+    }
+
+    Signal(collectionPagedListController.pagedListData, viewDim).onUi {
+      case (CollectionPagedListData(section, PagedListWrapper(pl)), dim) =>
+        collectionAdapter.setData(dim, section, pl)
+    }
+    collectionPagedListController.pagedListData.map(_.section).onChanged.onUi { _ =>
+      //collectionRecyclerView.foreach(_.scrollToPosition(0))
+      collectionRecyclerView.foreach(_.smoothScrollToPosition(0))
+    }
+  }
+
+  override def onCreateView(inflater: LayoutInflater, container: ViewGroup, savedInstanceState: Bundle): View =
+    inflater.inflate(R.layout.fragment_collection, container, false)
+
+
+  override def onViewCreated(view: View, savedInstanceState: Bundle): Unit = {
+    name
+    emptyView
+    timestamp
+
+    collectionController.focusedItem ! None
+
+    messageActionsController.onMessageAction.on(Threading.Ui){
+      case (MessageAction.Reveal, _) =>
+        KeyboardUtils.closeKeyboardIfShown(getActivity)
+        collectionController.closeCollection()
+        collectionController.focusedItem.mutate {
+          case Some(m) if m.msgType == Message.Type.ASSET => None
+          case m => m
+        }
+      case _ =>
+    }
+
+    collectionController.focusedItem.on(Threading.Ui) {
+      case Some(md) if md.msgType == Message.Type.ASSET => showSingleImage()
+      case _ => closeSingleImage()
+    }
+
+
+    collectionRecyclerView.foreach { collectionRecyclerView =>
+      collectionRecyclerView.addOnLayoutChangeListener(layoutChangeListener)
+
+
+      val layoutManager = new GridLayoutManager(context, CollectionController.GridColumns, LinearLayoutManager.VERTICAL, false) {
+        override def supportsPredictiveItemAnimations(): Boolean = true
+      }
+
+      layoutManager.setSpanSizeLookup(collectionSpanSizeLookup)
+
+      collectionRecyclerView.setAdapter(collectionAdapter)
+      collectionRecyclerView.setLayoutManager(layoutManager)
+      collectionRecyclerView.addItemDecoration(collectionItemDecorator)
+
+      collectionAdapter.onMessageClick {
+        collectionController.focusedItem ! Some(_)
+      }
+
+      collectionRecyclerView.setOnTouchListener(new OnTouchListener {
+        var headerDown = false
+
+        override def onTouch(v: View, event: MotionEvent): Boolean = {
+          val x = Math.round(event.getX)
+          val y = Math.round(event.getY)
+          event.getAction match {
+            case MotionEvent.ACTION_DOWN =>
+              if (collectionItemDecorator.getHeaderClicked(x, y) < 0) {
+                headerDown = false
+              } else {
+                headerDown = true
+              }
+              false
+            case MotionEvent.ACTION_MOVE =>
+              if (event.getHistorySize > 0) {
+                val deltaX = event.getHistoricalX(0) - x
+                val deltaY = event.getHistoricalY(0) - y
+                if (Math.abs(deltaY) + Math.abs(deltaX) > CollectionFragment.MAX_DELTA_TOUCH) {
+                  headerDown = false
+                }
+              }
+              false
+            case MotionEvent.ACTION_UP if !headerDown => false
+            case MotionEvent.ACTION_UP =>
+              val position = collectionItemDecorator.getHeaderClicked(x, y)
+              if (position >= 0) {
+                Option(collectionAdapter.getHeader(position)).collect {
+                  case Some(SingleSectionHeader(SingleSection(contentType, totalCount))) if totalCount > contentType.previewCount => Some(contentType)
+                }.foreach(collectionPagedListController.contentType ! _)
+                true
+              } else false
+            case _ => false
+          }
+        }
+      })
+    }
+
+    searchRecyclerView.foreach { searchRecyclerView =>
+
+      searchAdapter = new SearchAdapter()
+
+      //TODO: do we need this?
+      searchRecyclerView.addOnLayoutChangeListener(new OnLayoutChangeListener {
+        override def onLayoutChange(v: View, left: Int, top: Int, right: Int, bottom: Int, oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int): Unit = {
+          searchAdapter.notifyDataSetChanged()
+        }
+      })
+
+      searchRecyclerView.setLayoutManager(new LinearLayoutManager(getContext) {
+        override def supportsPredictiveItemAnimations(): Boolean = true
+        override def onScrollStateChanged(state: Int): Unit = {
+          super.onScrollStateChanged(state)
+          if (state == RecyclerView.SCROLL_STATE_DRAGGING){
+            KeyboardUtils.closeKeyboardIfShown(getActivity)
+          }
+        }
+      })
+      searchRecyclerView.setAdapter(searchAdapter)
+    }
+
+    collectionController.contentSearchQuery.currentValue.foreach{ q =>
+      if (q.originalString.nonEmpty) {
+        searchBoxView.foreach(_.setText(q.originalString))
+        searchBoxView.foreach(_.setVisibility(View.GONE))
+        searchBoxClose.foreach(_.setVisibility(View.VISIBLE))
+      }
+    }
+
+    searchBoxView.foreach { searchBoxView =>
+      searchBoxView.addTextListener { text =>
+        if (text.trim.length() <= 1) {
+          collectionController.contentSearchQuery ! ContentSearchQuery.empty
+        } else {
+          collectionController.contentSearchQuery ! ContentSearchQuery(text)
+        }
+        searchBoxClose.foreach(_.setVisible(text.nonEmpty))
+      }
+
+      searchBoxView.setOnEditorActionListener(new OnEditorActionListener {
+        override def onEditorAction(v: TextView, actionId: Int, event: KeyEvent): Boolean = {
+          if (actionId == EditorInfo.IME_ACTION_DONE) {
+            KeyboardUtils.closeKeyboardIfShown(getActivity)
+            searchBoxView.clearFocus()
+          }
+          true
+        }
+      })
+
+      searchBoxView.setOnKeyPreImeListener(new View.OnKeyListener(){
+        override def onKey(v: View, keyCode: Int, event: KeyEvent): Boolean = {
+          if (event.getAction == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_BACK) {
+            v.clearFocus()
+          }
+          false
+        }
+      })
+      searchBoxView.setOnFocusChangeListener(new OnFocusChangeListener {
+        override def onFocusChange(v: View, hasFocus: Boolean): Unit = {
+          searchBoxHint.foreach(_.setVisible(!hasFocus && searchBoxView.getText.length() == 0))
+        }
+      })
+    }
+
+
+    //TODO: rewrite this ------------
+    Signal(searchAdapter.cursor.flatMap(_.countSignal).orElse(Signal(-1)), collectionController.contentSearchQuery).on(Threading.Ui) {
+      case (0, query) if query.originalString.nonEmpty =>
+        noSearchResultsText.foreach(_.setVisibility(View.VISIBLE))
+      case _ =>
+        noSearchResultsText.foreach(_.setVisibility(View.GONE))
+    }
+    //TODO: rewrite this ^^^^^^^^^^^^
+
+    toolbar.foreach { toolbar =>
+
+      toolbar.inflateMenu(R.menu.toolbar_collection)
+
+      toolbar.setNavigationOnClickListener(new OnClickListener {
+        override def onClick(v: View): Unit = {
+          onBackPressed()
+        }
+      })
+
+      toolbar.setOnMenuItemClickListener(new Toolbar.OnMenuItemClickListener {
+        override def onMenuItemClick(item: MenuItem): Boolean =
+          item.getItemId match {
+            case R.id.close =>
+              collectionController.focusedItem ! None
+              collectionController.contentSearchQuery ! ContentSearchQuery.empty
+              collectionController.closeCollection()
+              true
+            case _ => false
+          }
+      })
+    }
   }
 
   private def showSingleImage() = {
@@ -80,225 +365,36 @@ class CollectionFragment extends BaseFragment[CollectionFragment.Container] with
     }
   }
 
-  override def onCreateView(inflater: LayoutInflater, container: ViewGroup, savedInstanceState: Bundle): View = {
-    val view = inflater.inflate(R.layout.fragment_collection, container, false)
-    val name: TextView  = ViewUtils.getView(view, R.id.tv__collection_toolbar__name)
-    val timestamp: TextView  = ViewUtils.getView(view, R.id.tv__collection_toolbar__timestamp)
-    val collectionRecyclerView: CollectionRecyclerView = ViewUtils.getView(view, R.id.collection_list)
-    val searchRecyclerView: RecyclerView = ViewUtils.getView(view, R.id.search_results_list)
-    val emptyView: View = ViewUtils.getView(view, R.id.ll__collection__empty)
-    val toolbar: Toolbar = ViewUtils.getView(view, R.id.t_toolbar)
-    val searchBoxView: TypefaceEditText = ViewUtils.getView(view, R.id.search_box)
-    val searchBoxClose: GlyphTextView = ViewUtils.getView(view, R.id.search_close)
-    val searchBoxHint: TypefaceTextView = ViewUtils.getView(view, R.id.search_hint)
-    val noSearchResultsText: TypefaceTextView = ViewUtils.getView(view, R.id.no_search_results)
-
-    def setNavigationIconVisibility(visible: Boolean) = {
-      if (visible) {
-        if (ThemeUtils.isDarkTheme(getContext)) {
-          toolbar.setNavigationIcon(R.drawable.action_back_light)
-        } else {
-          toolbar.setNavigationIcon(R.drawable.action_back_dark)
-        }
-      } else {
-        toolbar.setNavigationIcon(null)
-      }
-    }
-
-    emptyView.setVisibility(View.GONE)
-    timestamp.setVisibility(View.GONE)
-    setNavigationIconVisibility(false)
-    controller.focusedItem ! None
-
-    messageActionsController.onMessageAction.on(Threading.Ui){
-      case (MessageAction.Reveal, _) =>
-        KeyboardUtils.closeKeyboardIfShown(getActivity)
-        controller.closeCollection
-        controller.focusedItem.mutate {
-          case Some(m) if m.msgType == Message.Type.ASSET => None
-          case m => m
-        }
-      case _ =>
-    }
-
-    controller.focusedItem.on(Threading.Ui) {
-      case Some(md) if md.msgType == Message.Type.ASSET => showSingleImage()
-      case _ => closeSingleImage()
-    }
-
-    accentColorController.accentColor.map(_.color).onUi(searchBoxView.setAccentColor)
-
-    collectionAdapter = new CollectionAdapter(collectionRecyclerView.viewDim)
-    collectionRecyclerView.init(collectionAdapter)
-
-    searchAdapter = new SearchAdapter()
-
-    searchRecyclerView.addOnLayoutChangeListener(new OnLayoutChangeListener {
-      override def onLayoutChange(v: View, left: Int, top: Int, right: Int, bottom: Int, oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int): Unit = {
-        searchAdapter.notifyDataSetChanged()
-      }
-    })
-
-    searchRecyclerView.setLayoutManager(new LinearLayoutManager(getContext){
-      override def supportsPredictiveItemAnimations(): Boolean = true
-
-      override def onScrollStateChanged(state: Int): Unit = {
-        super.onScrollStateChanged(state)
-        if (state == RecyclerView.SCROLL_STATE_DRAGGING){
-          KeyboardUtils.closeKeyboardIfShown(getActivity)
-        }
-      }
-
-      override def onLayoutChildren(recycler: RecyclerView#Recycler, state: State): Unit = {
-        try{
-          super.onLayoutChildren(recycler, state)
-        } catch {
-          case ioob: IndexOutOfBoundsException => error("IOOB caught") //XXX: I don't think this is needed anymore
-        }
-
-      }
-    })
-    searchRecyclerView.setAdapter(searchAdapter)
-
-    controller.contentSearchQuery.currentValue.foreach{q =>
-      if (q.originalString.nonEmpty) {
-        searchBoxView.setText(q.originalString)
-        searchBoxHint.setVisibility(View.GONE)
-        searchBoxClose.setVisibility(View.VISIBLE)
-      }
-    }
-    searchBoxView.addTextChangedListener(new TextWatcher {
-      override def beforeTextChanged(s: CharSequence, start: Int, count: Int, after: Int): Unit = {}
-
-      override def onTextChanged(s: CharSequence, start: Int, before: Int, count: Int): Unit = {
-        if (s.toString.trim.length() <= 1) {
-          controller.contentSearchQuery ! ContentSearchQuery.empty
-        } else {
-          controller.contentSearchQuery ! ContentSearchQuery(s.toString)
-        }
-        searchBoxClose.setVisible(s.toString.nonEmpty)
-      }
-
-      override def afterTextChanged(s: Editable): Unit = {}
-    })
-    searchBoxView.asInstanceOf[EditText].setOnEditorActionListener(new OnEditorActionListener {
-      override def onEditorAction(v: TextView, actionId: Int, event: KeyEvent): Boolean = {
-        if (actionId == EditorInfo.IME_ACTION_DONE) {
-          KeyboardUtils.closeKeyboardIfShown(getActivity)
-          searchBoxView.clearFocus()
-        }
-        true
-      }
-    })
-    searchBoxView.setOnKeyPreImeListener(new View.OnKeyListener(){
-      override def onKey(v: View, keyCode: Int, event: KeyEvent): Boolean = {
-        if (event.getAction == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_BACK) {
-          v.clearFocus()
-        }
-        false
-      }
-    })
-    searchBoxView.setOnFocusChangeListener(new OnFocusChangeListener {
-      override def onFocusChange(v: View, hasFocus: Boolean): Unit = {
-        searchBoxHint.setVisible(!hasFocus && searchBoxView.getText.length() == 0)
-      }
-    })
-
-    searchBoxClose.setOnClickListener(new OnClickListener {
-      override def onClick(v: View): Unit = {
-        searchBoxView.setText("")
-        searchBoxView.clearFocus()
-        searchBoxHint.setVisibility(View.VISIBLE)
-        KeyboardUtils.closeKeyboardIfShown(getActivity)
-      }
-    })
-
-    controller.conversationName.onUi(name.setText(_))
-
-    Signal(collectionAdapter.adapterState, controller.focusedItem, controller.contentSearchQuery).on(Threading.Ui) {
-      case (AdapterState(_, _, _), Some(messageData), _) if messageData.msgType == Message.Type.ASSET =>
-        setNavigationIconVisibility(true)
-        timestamp.setVisibility(View.VISIBLE)
-        timestamp.setText(LocalDateTime.ofInstant(messageData.time.instant, ZoneId.systemDefault()).toLocalDate.toString)
-      case (_, _, query) if query.originalString.nonEmpty =>
-        collectionRecyclerView.setVisibility(View.GONE)
-        searchRecyclerView.setVisibility(View.VISIBLE)
-        timestamp.setVisibility(View.GONE)
-        emptyView.setVisibility(View.GONE)
-      case (AdapterState(AllContent, 0, false), None, _) =>
-        emptyView.setVisibility(View.VISIBLE)
-        collectionRecyclerView.setVisibility(View.GONE)
-        searchRecyclerView.setVisibility(View.GONE)
-        setNavigationIconVisibility(false)
-        timestamp.setVisibility(View.GONE)
-        noSearchResultsText.setVisibility(View.GONE)
-      case (AdapterState(contentMode, _, _), None, _) =>
-        emptyView.setVisibility(View.GONE)
-        collectionRecyclerView.setVisibility(View.VISIBLE)
-        searchRecyclerView.setVisibility(View.GONE)
-        setNavigationIconVisibility(contentMode != AllContent)
-        timestamp.setVisibility(View.GONE)
-        noSearchResultsText.setVisibility(View.GONE)
-      case _ =>
-    }
-
-    Signal(searchAdapter.cursor.flatMap(_.countSignal).orElse(Signal(-1)), controller.contentSearchQuery).on(Threading.Ui) {
-      case (0, query) if query.originalString.nonEmpty =>
-        noSearchResultsText.setVisibility(View.VISIBLE)
-      case _ =>
-        noSearchResultsText.setVisibility(View.GONE)
-    }
-
-    collectionAdapter.contentMode.on(Threading.Ui){ _ =>
-      collectionRecyclerView.scrollToPosition(0)
-    }
-
-    toolbar.inflateMenu(R.menu.toolbar_collection)
-
-    toolbar.setNavigationOnClickListener(new OnClickListener {
-      override def onClick(v: View): Unit = {
-        onBackPressed()
-      }
-    })
-
-    toolbar.setOnMenuItemClickListener(new Toolbar.OnMenuItemClickListener {
-      override def onMenuItemClick(item: MenuItem): Boolean = {
-        item.getItemId match {
-          case R.id.close =>
-            controller.focusedItem ! None
-            controller.contentSearchQuery ! ContentSearchQuery.empty
-            controller.closeCollection()
-            true
-          case _ => false
-        }
-      }
-    })
-    view
-  }
-
   override def onBackPressed(): Boolean = {
-    Option(findById[CollectionRecyclerView](R.id.collection_list)).foreach { rv =>
-      rv.stopScroll()
-      rv.getSpanSizeLookup().clearCache()
-    }
+    collectionRecyclerView.foreach(_.stopScroll())
+    collectionSpanSizeLookup.clearCache()
 
     withFragmentOpt(SingleImageCollectionFragment.TAG) {
       case Some(_: SingleImageCollectionFragment) =>
-        controller.focusedItem ! None
+        collectionController.focusedItem ! None
         true
       case _ =>
-        if (!collectionAdapter.onBackPressed){
-          controller.contentSearchQuery ! ContentSearchQuery.empty
-          controller.closeCollection()
+        collectionPagedListController.contentType.currentValue.foreach {
+          case None =>
+            collectionController.contentSearchQuery ! ContentSearchQuery.empty
+            collectionController.closeCollection()
+          case _ =>
+            collectionPagedListController.contentType ! None
         }
         true
     }
   }
+
+  override def onDestroyView(): Unit = {
+    super.onDestroyView()
+    collectionRecyclerView.foreach(_.removeOnLayoutChangeListener(layoutChangeListener))
+  }
+
 }
 
 object CollectionFragment {
 
-  val TAG = CollectionFragment.getClass.getSimpleName
+  val TAG: String = ZLog.ImplicitTag.implicitLogTag
 
   val MAX_DELTA_TOUCH = 30
 

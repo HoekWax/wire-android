@@ -34,7 +34,7 @@ import com.waz.service.messages.MessageAndLikes
 import com.waz.threading.Threading
 import com.waz.utils.events.{EventContext, EventStream, Signal, SourceSignal}
 import com.waz.zclient.collection.controllers.CollectionController
-import com.waz.zclient.collection.controllers.CollectionController.{AllContent, ContentType, Images}
+import com.waz.zclient.collection.controllers.CollectionController.Images
 import com.waz.zclient.messages.RecyclerCursor
 import com.waz.zclient.messages.RecyclerCursor.RecyclerNotifier
 import com.waz.zclient.messages.controllers.MessageActionsController
@@ -120,8 +120,6 @@ class ImageSwipeAdapter(context: Context)(implicit injector: Injector, ev: Event
 
   private val zms = inject[Signal[ZMessaging]]
 
-  val contentMode = Signal[ContentType](AllContent)
-
   val notifier = new RecyclerNotifier(){
     override def notifyDataSetChanged(): Unit = self.notifyDataSetChanged()
 
@@ -136,7 +134,7 @@ class ImageSwipeAdapter(context: Context)(implicit injector: Injector, ev: Event
   val cursor = for {
     zs <- zms
     convId <- inject[ConversationController].currentConvId
-  } yield new RecyclerCursor(convId, zs, notifier, Some(MessageFilter(Some(Images.typeFilter))))
+  } yield new RecyclerCursor(convId, zs, notifier, Some(MessageFilter(Some(Seq(Images.contentFilter)))))
 
   implicit val executionContext = Threading.Ui
 

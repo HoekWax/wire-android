@@ -36,17 +36,17 @@ import com.waz.threading.Threading
 import com.waz.utils.events._
 import com.waz.zclient._
 import com.waz.zclient.collection.controllers.CollectionController
-import com.waz.zclient.collection.controllers.CollectionController.{AllContent, ContentType, Images}
+import com.waz.zclient.collection.controllers.CollectionController.Images
 import com.waz.zclient.collection.fragments.SingleImageCollectionFragment.ImageSwipeAdapter
+import com.waz.zclient.common.views.ImageAssetDrawable
+import com.waz.zclient.common.views.ImageController.WireImage
+import com.waz.zclient.conversation.ConversationController
 import com.waz.zclient.messages.RecyclerCursor
 import com.waz.zclient.messages.RecyclerCursor.RecyclerNotifier
 import com.waz.zclient.messages.controllers.MessageActionsController
 import com.waz.zclient.pages.BaseFragment
 import com.waz.zclient.pages.main.conversationpager.CustomPagerTransformer
 import com.waz.zclient.utils.ViewUtils
-import com.waz.zclient.common.views.ImageAssetDrawable
-import com.waz.zclient.common.views.ImageController.WireImage
-import com.waz.zclient.conversation.ConversationController
 import com.waz.zclient.views.images.TouchImageView
 
 import scala.collection.mutable
@@ -108,8 +108,6 @@ object SingleImageCollectionFragment {
 
     private val zms = inject[Signal[ZMessaging]]
 
-    val contentMode = Signal[ContentType](AllContent)
-
     val notifier = new RecyclerNotifier(){
       override def notifyDataSetChanged(): Unit = self.notifyDataSetChanged()
 
@@ -124,7 +122,7 @@ object SingleImageCollectionFragment {
     val cursor = for {
       zs <- zms
       convId <- inject[ConversationController].currentConvId
-    } yield new RecyclerCursor(convId, zs, notifier, Some(MessageFilter(Some(Images.typeFilter))))
+    } yield new RecyclerCursor(convId, zs, notifier, Some(MessageFilter(Some(Seq(Images.contentFilter)))))
 
     cursor.on(Threading.Ui) { c =>
       if (!recyclerCursor.contains(c)) {

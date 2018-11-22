@@ -34,7 +34,6 @@ import com.waz.zclient.collection.controllers.CollectionController
 import com.waz.zclient.collection.fragments.CollectionFragment
 import com.waz.zclient.common.controllers.BrowserController
 import com.waz.zclient.common.controllers.global.{AccentColorController, KeyboardController}
-import com.waz.zclient.controllers.collections.CollectionsObserver
 import com.waz.zclient.controllers.confirmation.{ConfirmationObserver, ConfirmationRequest, IConfirmationController}
 import com.waz.zclient.controllers.navigation.{INavigationController, Page}
 import com.waz.zclient.controllers.singleimage.{ISingleImageController, SingleImageObserver}
@@ -56,7 +55,6 @@ class MainPhoneFragment extends FragmentHelper
   with ConversationPagerFragment.Container
   with SingleImageObserver
   with ConfirmationObserver
-  with CollectionsObserver
   with ConfirmationFragment.Container {
 
   import MainPhoneFragment._
@@ -133,7 +131,6 @@ class MainPhoneFragment extends FragmentHelper
     super.onStart()
     singleImageController.addSingleImageObserver(this)
     confirmationController.addConfirmationObserver(this)
-    collectionController.addObserver(this)
 
     consentDialogFuture
   }
@@ -141,7 +138,6 @@ class MainPhoneFragment extends FragmentHelper
   override def onStop(): Unit = {
     singleImageController.removeSingleImageObserver(this)
     confirmationController.removeConfirmationObserver(this)
-    collectionController.removeObserver(this)
     super.onStop()
   }
 
@@ -195,10 +191,6 @@ class MainPhoneFragment extends FragmentHelper
   }
 
   override def onHideSingleImage(): Unit = ()
-
-  override def openCollection(): Unit = ()
-
-  override def closeCollection(): Unit = ()
 
   override def onRequestConfirmation(confirmationRequest: ConfirmationRequest, requester: Int): Unit = {
     confirmationMenu.foreach(_.onRequestConfirmation(confirmationRequest))

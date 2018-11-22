@@ -29,7 +29,7 @@ import com.waz.ZLog.ImplicitTag._
 import com.waz.model._
 import com.waz.service.ZMessaging
 import com.waz.threading.Threading
-import com.waz.utils.events.{EventContext, EventStream, Signal, SourceSignal}
+import com.waz.utils.events._
 import com.waz.utils.wrappers.AndroidURIUtil
 import com.waz.zclient.collection.controllers.CollectionController
 import com.waz.zclient.common.controllers.BrowserController
@@ -63,7 +63,6 @@ trait CollectionItemView extends ViewHelper with EphemeralPartView {
   messageAndLikesResolver.disableAutowiring()
 
   this.onLongClick {
-    messageData.currentValue.foreach(collectionController.openContextMenuForMessage ! _)
     performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
     messageAndLikesResolver.currentValue.exists(messageActions.showDialog(_, fromCollection = true))
   }
@@ -89,14 +88,6 @@ trait CollectionNormalItemView extends CollectionItemView with ClickableViewPart
 
   messageAndLikesResolver.on(Threading.Ui) { mal => set(mal, content) }
 
-  onClicked { _ =>
-    import Threading.Implicits.Ui
-    for {
-      false <- expired.head
-      md <- messageData.head
-    } collectionController.clickedMessage ! md
-  }
-
   def setMessageData(messageData: MessageData, content: Option[MessageContent]): Unit = {
     this.content = content
     this.messageData ! messageData
@@ -109,7 +100,7 @@ class CollectionImageView(context: Context) extends AspectRatioImageView(context
   override val tpe: MsgPart = MsgPart.Image
   messageAndLikesResolver.onUi(set(_, None))
 
-  val onClicked = EventStream[Unit]()
+  val onClicked: SourceStream[MessageData] = EventStream[MessageData]()
 
   object CollectionImageView {
     val CornerRadius = 10
@@ -134,8 +125,7 @@ class CollectionImageView(context: Context) extends AspectRatioImageView(context
       false <- expired.head
       md <- messageData.head
     } {
-      collectionController.clickedMessage ! md
-      onClicked ! (())
+      onClicked ! md
     }
   }
 
@@ -211,7 +201,7 @@ case class CollectionItemViewHolder(view: CollectionNormalItemView)(implicit eve
 }
 
 case class CollectionImageViewHolder(view: CollectionImageView, listener: OnClickListener)(implicit eventContext: EventContext) extends RecyclerView.ViewHolder(view) {
-  view.onClicked { _ =>
+  view.onClicked { md =>
     listener.onClick(view)
   }
 

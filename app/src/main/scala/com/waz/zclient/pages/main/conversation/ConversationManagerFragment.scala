@@ -49,7 +49,6 @@ import com.waz.zclient.collection.fragments.CollectionFragment
 import com.waz.zclient.common.controllers.ScreenController
 import com.waz.zclient.common.controllers.global.KeyboardController
 import com.waz.zclient.controllers.camera.{CameraActionObserver, ICameraController}
-import com.waz.zclient.controllers.collections.CollectionsObserver
 import com.waz.zclient.controllers.drawing.IDrawingController
 import com.waz.zclient.controllers.drawing.IDrawingController.DrawingDestination.CAMERA_PREVIEW_VIEW
 import com.waz.zclient.controllers.location.{ILocationController, LocationObserver}
@@ -70,7 +69,6 @@ import com.waz.zclient.{FragmentHelper, R}
 class ConversationManagerFragment extends FragmentHelper
   with ConversationScreenControllerObserver
   with LocationObserver
-  with CollectionsObserver
   with UserProfileContainer
   with CameraActionObserver {
 
@@ -183,6 +181,12 @@ class ConversationManagerFragment extends FragmentHelper
       hideFragment(DrawingFragment.Tag)
       if (dest == CAMERA_PREVIEW_VIEW) cameraController.closeCamera(CameraContext.MESSAGE)
     }
+    subs += collectionController.onCollectionOpen.onUi { _ =>
+      openCollection()
+    }
+    subs += collectionController.onCollectionClosed.onUi { _ =>
+      closeCollection()
+    }
   }
 
   override def onStart(): Unit = {
@@ -190,14 +194,12 @@ class ConversationManagerFragment extends FragmentHelper
     convScreenController.addConversationControllerObservers(this)
     cameraController.addCameraActionObserver(this)
     locationController.addObserver(this)
-    collectionController.addObserver(this)
   }
 
   override def onStop(): Unit = {
     locationController.removeObserver(this)
     cameraController.removeCameraActionObserver(this)
     convScreenController.removeConversationControllerObservers(this)
-    collectionController.removeObserver(this)
     super.onStop()
   }
 
@@ -221,10 +223,10 @@ class ConversationManagerFragment extends FragmentHelper
     }
   }
 
-  override def openCollection(): Unit =
+  def openCollection(): Unit =
     showFragment(CollectionFragment.newInstance(), CollectionFragment.TAG, Page.COLLECTION)
 
-  override def closeCollection(): Unit = {
+  def closeCollection(): Unit = {
     getChildFragmentManager.popBackStack(CollectionFragment.TAG, FragmentManager.POP_BACK_STACK_INCLUSIVE)
     navigationController.setRightPage(Page.MESSAGE_STREAM, ConversationManagerFragment.Tag)
   }

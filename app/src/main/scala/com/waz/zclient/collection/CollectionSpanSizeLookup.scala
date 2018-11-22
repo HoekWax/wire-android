@@ -70,7 +70,7 @@ class CollectionSpanSizeLookup(val spanCount: Int, val adapter: CollectionAdapte
     else {
       val nextPosition = position + 1
       nextPosition >= 0 && nextPosition < adapter.getItemCount &&
-        !adapter.getHeaderId(position).equals(adapter.getHeaderId(nextPosition))
+        !adapter.getHeader(position).equals(adapter.getHeader(nextPosition))
     }
 
   def isFirstAfterHeader(position: Int): Boolean =

@@ -15,11 +15,15 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-package com.waz.zclient.controllers.collections;
+package com.waz.zclient.collection
 
-public interface CollectionsObserver {
+import android.arch.paging.PositionalDataSource
+import com.waz.model.MessageData
+import com.waz.utils.wrappers.DBCursor
+import com.waz.zclient.Injectable
 
-    void openCollection();
+class CollectionsDataSource(val cursor: Option[DBCursor]) extends PositionalDataSource[MessageData] with Injectable {
 
-    void closeCollection();
+  override def loadInitial(params: PositionalDataSource.LoadInitialParams, callback: PositionalDataSource.LoadInitialCallback[MessageData]): Unit = ???
+  override def loadRange(params: PositionalDataSource.LoadRangeParams, callback: PositionalDataSource.LoadRangeCallback[MessageData]): Unit = ???
 }
