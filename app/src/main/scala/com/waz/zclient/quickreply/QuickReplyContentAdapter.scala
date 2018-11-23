@@ -17,95 +17,53 @@
  */
 package com.waz.zclient.quickreply
 
+import android.arch.paging.{PagedList, PagedListAdapter}
 import android.content.Context
+import android.support.v7.util.DiffUtil
 import android.support.v7.widget.RecyclerView
 import android.view.{LayoutInflater, View, ViewGroup}
 import android.widget.TextView
-import com.waz.ZLog.ImplicitTag._
-import com.waz.ZLog.verbose
-import com.waz.model.ConversationData.ConversationType
 import com.waz.model._
+import com.waz.service.messages.MessageAndLikes
 import com.waz.service.{AccountsService, ZMessaging}
 import com.waz.threading.Threading
 import com.waz.utils.events.{EventContext, Signal}
-import com.waz.zclient.messages.RecyclerCursor
-import com.waz.zclient.messages.RecyclerCursor.RecyclerNotifier
+import com.waz.zclient.quickreply.QuickReplyContentAdapter._
 import com.waz.zclient.ui.utils.TextViewUtils
 import com.waz.zclient.utils.{StringUtils, ViewUtils}
 import com.waz.zclient.{Injectable, Injector, R}
 
-class QuickReplyContentAdapter(context: Context, accountId: UserId, convId: ConvId)(implicit inj: Injector, evc: EventContext)
-extends RecyclerView.Adapter[QuickReplyContentAdapter.ViewHolder] with Injectable { adapter =>
+class QuickReplyContentAdapter(accountId: UserId, convId: ConvId)(implicit inj: Injector, evc: EventContext)
+extends PagedListAdapter[MessageAndLikes, ViewHolder](MessageDataDiffCallback) with Injectable { adapter =>
 
-  import QuickReplyContentAdapter._
+  private var isGroup: Boolean = false
 
-  lazy val zms = inject[AccountsService].zmsInstances.map(_.find(_.selfUserId == accountId)).collect { case Some(z) => z }
-
-  val ephemeralCount = Signal(Set.empty[MessageId])
-
-  var unreadIndex = 0
-  var convType = ConversationType.Group
-
-  val cursor = for {
-    zs <- zms
-    convType <- zs.convsStorage.signal(convId).map(_.convType)
-  } yield (new RecyclerCursor(convId, zs, notifier), convType)
-
-  private var messages = Option.empty[RecyclerCursor]
-
-  cursor.on(Threading.Ui) { case (c, tpe) =>
-    if (!messages.contains(c)) {
-      verbose(s"cursor changed: ${c.count}")
-      unreadIndex = c.lastReadIndex + 1
-      messages.foreach(_.close())
-      messages = Some(c)
-      convType = tpe
-
-      notifier.notifyDataSetChanged()
-    }
+  def submitList(pagedList: PagedList[MessageAndLikes], isGroup: Boolean): Unit = {
+    this.isGroup = isGroup
+    submitList(pagedList)
   }
 
-  lazy val notifier = new RecyclerNotifier {
-    override def notifyItemRangeInserted(index: Int, length: Int) =
-      notifyDataSetChanged()
-
-    override def notifyItemRangeChanged(index: Int, length: Int) =
-      notifyDataSetChanged()
-
-    override def notifyItemRangeRemoved(pos: Int, count: Int) =
-      notifyDataSetChanged()
-
-    override def notifyDataSetChanged() = {
-      messages foreach { c =>
-        unreadIndex = c.lastReadIndex + 1
-      }
-      adapter.notifyDataSetChanged()
-    }
+  override def onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder = {
+    val inflater = LayoutInflater.from(parent.getContext)
+    new ViewHolder(parent.getContext, accountId, isGroup, inflater.inflate(R.layout.layout_quick_reply_content, parent, false))
   }
 
-  lazy val inflater = LayoutInflater.from(context)
-
-  override def onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder =
-    new ViewHolder(context, accountId, convType, inflater.inflate(R.layout.layout_quick_reply_content, parent, false))
-
-  override def onBindViewHolder(holder: ViewHolder, position: Int): Unit =
+  override def onBindViewHolder(holder: ViewHolder, position: Int): Unit = {
     holder.message ! getItem(position).message
-
-  def getItem(position: Int) =
-    messages.map { ms => ms(ms.count - 1 - position) }.orNull
-
-  override def getItemCount: Int =
-    messages.fold(0) { ms => math.max(0, ms.count - unreadIndex) }
+  }
 }
 
 object QuickReplyContentAdapter {
 
-  class ViewHolder(context: Context, accountId: UserId, convType: ConversationType, itemView: View)(implicit inj: Injector, evc: EventContext)
+  val MessageDataDiffCallback: DiffUtil.ItemCallback[MessageAndLikes] = new DiffUtil.ItemCallback[MessageAndLikes] {
+    override def areItemsTheSame(o: MessageAndLikes, n: MessageAndLikes): Boolean = n.message.id == o.message.id
+    override def areContentsTheSame(o: MessageAndLikes, n: MessageAndLikes): Boolean = areItemsTheSame(o, n)
+  }
+
+  class ViewHolder(context: Context, accountId: UserId, isGroupConv: Boolean, itemView: View)(implicit inj: Injector, evc: EventContext)
         extends RecyclerView.ViewHolder(itemView) with Injectable {
 
     lazy val zms = inject[AccountsService].zmsInstances.map(_.find(_.selfUserId == accountId)).collect { case Some(z) => z }
-
-    val isGroupConv = convType == ConversationType.Group
 
     val content: TextView = ViewUtils.getView(itemView, R.id.ttv__quick_reply__content)
 

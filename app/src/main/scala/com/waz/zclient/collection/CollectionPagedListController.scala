@@ -17,24 +17,20 @@
  */
 package com.waz.zclient.collection
 
-import android.arch.paging.PagedList
 import android.content.Context
-import com.waz.ZLog
 import com.waz.ZLog.ImplicitTag.implicitLogTag
 import com.waz.model.MessageData.MessageDataDao
 import com.waz.model.{ConvId, MessageId}
 import com.waz.service.ZMessaging
 import com.waz.service.messages.MessageAndLikes
-import com.waz.threading.Threading
 import com.waz.threading.Threading.Implicits.Background
 import com.waz.utils.events._
-import com.waz.utils.returning
 import com.waz.utils.wrappers.DBCursor
 import com.waz.zclient.collection.CollectionPagedListController._
 import com.waz.zclient.collection.controllers.CollectionController.{CollectionSection, ContentType, _}
 import com.waz.zclient.conversation.ConversationController
-import com.waz.zclient.messages.{ExecutorWrapper, MessageDataSource, PagedListWrapper}
-import com.waz.zclient.{Injectable, Injector}
+import com.waz.zclient.messages.PagedListWrapper
+import com.waz.zclient.{Injectable, Injector, MessageAndLikesSourceFactory}
 
 import scala.concurrent.Future
 
@@ -43,6 +39,8 @@ class CollectionPagedListController()(implicit inj: Injector, ec: EventContext, 
   private val zms = inject[Signal[ZMessaging]]
   private val convController = inject[ConversationController]
   private val storage = zms.map(_.storage.db)
+
+  private val dataSourceFactory = new MessageAndLikesSourceFactory
 
   val contentType: SourceSignal[Option[ContentType]] = Signal[Option[ContentType]](None)
 
@@ -63,24 +61,6 @@ class CollectionPagedListController()(implicit inj: Injector, ec: EventContext, 
     }
   }
 
-
-  @volatile private var _pagedList = Option.empty[PagedList[MessageAndLikes]]
-  private def getPagedList(cursor: Option[DBCursor]): PagedList[MessageAndLikes] = {
-    _pagedList.foreach(_.getDataSource.invalidate())
-
-    val config = new PagedList.Config.Builder()
-      .setPageSize(PageSize)
-      .setInitialLoadSizeHint(InitialLoadSizeHint)
-      .setEnablePlaceholders(true)
-      .setPrefetchDistance(PrefetchDistance)
-      .build()
-
-    returning(new PagedList.Builder[Integer, MessageAndLikes](new MessageDataSource(cursor), config)
-      .setFetchExecutor(ExecutorWrapper(Threading.Background))
-      .setNotifyExecutor(ExecutorWrapper(Threading.Ui))
-      .build()) { pl => _pagedList = Option(pl) }
-  }
-
   private def convChanged(zms: ZMessaging, convId: ConvId): EventStream[Seq[MessageId]] =
     EventStream.union(
       zms.messagesStorage.onChanged.filter(_.exists(_.convId == convId)).map(_.map(_.id)),
@@ -90,10 +70,8 @@ class CollectionPagedListController()(implicit inj: Injector, ec: EventContext, 
     z      <- zms
     cId    <- convController.currentConv.map(_.id)
     ct     <- contentType
-    _ = ZLog.verbose(s"contentType $ct")
     (section, cursor) <- RefreshingSignal[(CollectionSection, Option[DBCursor]), Seq[MessageId]](loadCursor(cId, ct), convChanged(z, cId))
-    _ = ZLog.verbose(s"cursor $cursor")
-    list   = PagedListWrapper(getPagedList(cursor))
+    list   = PagedListWrapper(dataSourceFactory.getPagedList(cursor))
   } yield CollectionPagedListData(section, list)
 }
 

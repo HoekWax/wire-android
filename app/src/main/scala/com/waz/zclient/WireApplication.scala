@@ -84,8 +84,9 @@ import com.waz.zclient.pages.main.conversationpager.controller.ISlidingPaneContr
 import com.waz.zclient.pages.main.pickuser.controller.IPickUserController
 import com.waz.zclient.participants.ParticipantsController
 import com.waz.zclient.preferences.PreferencesController
+import com.waz.zclient.quickreply.QuickReplyFragmentController
 import com.waz.zclient.tracking.{CrashController, GlobalTrackingController, UiTrackingController}
-import com.waz.zclient.utils.{BackStackNavigator, BackendPicker, Callback, ExternalFileSharing, LocalThumbnailCache, SafeLoggingEnabled, UiStorage, AndroidBase64}
+import com.waz.zclient.utils.{AndroidBase64, BackStackNavigator, BackendPicker, Callback, ExternalFileSharing, LocalThumbnailCache, SafeLoggingEnabled, UiStorage}
 import com.waz.zclient.views.DraftMap
 import javax.net.ssl.SSLContext
 import org.threeten.bp.Clock
@@ -285,6 +286,7 @@ object WireApplication {
 
     bind[MessagePagedListController] to new MessagePagedListController()
     bind[CollectionPagedListController] to new CollectionPagedListController()
+    bind[QuickReplyFragmentController] to new QuickReplyFragmentController()
   }
 
   protected def clearOldVideoFiles(context: Context): Unit = {

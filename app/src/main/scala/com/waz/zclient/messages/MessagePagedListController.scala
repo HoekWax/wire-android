@@ -30,12 +30,10 @@ import com.waz.threading.Threading
 import com.waz.utils.events._
 import com.waz.utils.wrappers.DBCursor
 import com.waz.zclient.conversation.ConversationController
-import com.waz.zclient.{Injectable, Injector}
+import com.waz.zclient.{Injectable, Injector, MessageAndLikesSourceFactory}
 import Threading.Implicits.Background
 
 import scala.concurrent.{ExecutionContext, Future}
-import MessagePagedListController._
-import com.waz.utils.returning
 import com.waz.zclient.messages.controllers.MessageActionsController
 
 class MessagePagedListController()(implicit inj: Injector, ec: EventContext, cxt: Context) extends Injectable {
@@ -49,22 +47,7 @@ class MessagePagedListController()(implicit inj: Injector, ec: EventContext, cxt
     storage.head.flatMap(_.read(implicit db => MessageDataDao.msgCursor(convId))).map { Option(_) }
   }
 
-  @volatile private var _pagedList = Option.empty[PagedList[MessageAndLikes]]
-  private def getPagedList(cursor: Option[DBCursor]): PagedList[MessageAndLikes] = {
-    _pagedList.foreach(_.getDataSource.invalidate())
-
-    val config = new PagedList.Config.Builder()
-      .setPageSize(PageSize)
-      .setInitialLoadSizeHint(InitialLoadSizeHint)
-      .setEnablePlaceholders(true)
-      .setPrefetchDistance(PrefetchDistance)
-      .build()
-
-    returning(new PagedList.Builder[Integer, MessageAndLikes](new MessageDataSource(cursor), config)
-      .setFetchExecutor(ExecutorWrapper(Threading.Background))
-      .setNotifyExecutor(ExecutorWrapper(Threading.Ui))
-      .build()) { pl => _pagedList = Option(pl) }
-  }
+  private val dataSourceFactory = new MessageAndLikesSourceFactory
 
   private def convChanged(zms: ZMessaging, convId: ConvId): EventStream[Seq[MessageId]] =
     EventStream.union(
@@ -78,24 +61,10 @@ class MessagePagedListController()(implicit inj: Injector, ec: EventContext, cxt
     isGroup                 <- Signal.future(z.conversations.isGroupConversation(cId))
     canHaveLink             = isGroup && cTeam.exists(z.teamId.contains(_)) && !teamOnly
     cursor                  <- RefreshingSignal[Option[DBCursor], Seq[MessageId]](loadCursor(cId), convChanged(z, cId))
-    list                    = PagedListWrapper(getPagedList(cursor))
+    list                    = PagedListWrapper(dataSourceFactory.getPagedList(cursor))
     lastRead                <- convController.currentConv.map(_.lastRead)
     messageToReveal         <- messageActionsController.messageToReveal.map(_.map(_.id))
   } yield (MessageAdapterData(cId, lastRead, isGroup, canHaveLink, z.selfUserId, z.teamId), list, messageToReveal)
-
-  val messageToCurrentConvAdded: EventStream[Seq[MessageData]] = (for {
-    z <- zms
-    conv <- convController.currentConvId
-    added <- Signal.wrap(z.messagesStorage.onAdded.map(_.filter(_.convId == conv)).filter(_.nonEmpty))
-  } yield added).onChanged
-
-  Threading.Ui
-}
-
-object MessagePagedListController {
-  val PageSize: Int = 50
-  val InitialLoadSizeHint: Int = 100
-  val PrefetchDistance: Int = 100
 }
 
 case class PagedListWrapper[T](pagedList: PagedList[T]) {

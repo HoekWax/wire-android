@@ -34,6 +34,7 @@ import com.waz.utils.events.Signal
 import com.waz.utils.returning
 import com.waz.zclient.common.controllers.SharingController
 import com.waz.zclient.common.controllers.global.AccentColorController
+import com.waz.zclient.messages.PagedListWrapper
 import com.waz.zclient.pages.main.popup.ViewPagerLikeLayoutManager
 import com.waz.zclient.ui.text.{TypefaceEditText, TypefaceTextView}
 import com.waz.zclient.ui.utils.KeyboardUtils
@@ -58,38 +59,40 @@ class QuickReplyFragment extends Fragment with FragmentHelper {
   import QuickReplyFragment._
   import com.waz.threading.Threading.Implicits.Ui
 
-  lazy val convId = ConvId(getArguments.getString(ConvIdExtra))
-  lazy val accountId = UserId(getArguments.getString(AccountIdExtra))
-  lazy val accounts = inject[AccountsService]
+  private lazy val convId = ConvId(getArguments.getString(ConvIdExtra))
+  private lazy val accountId = UserId(getArguments.getString(AccountIdExtra))
+  private lazy val accounts = inject[AccountsService]
+  private lazy val sharing  = inject[SharingController]
+  private lazy val accentColor = inject[AccentColorController].accentColor(accountId).collect { case Some(c) => c }
+  private lazy val quickReplyFragment = inject[QuickReplyFragmentController]
 
   //TODO make an accounts/zms controller or something
-  lazy val zms = accounts.zmsInstances.map(_.find(_.selfUserId == accountId)).collect { case Some(z) => z }
+  private lazy val zms = accounts.zmsInstances.map(_.find(_.selfUserId == accountId)).collect { case Some(z) => z }
+  private lazy val message = findById[TypefaceEditText](R.id.tet__quick_reply__message)
+  private lazy val layoutManager = new ViewPagerLikeLayoutManager(getContext)
+  private lazy val adapter = new QuickReplyContentAdapter(accountId, convId)
 
-  lazy val sharing  = inject[SharingController]
-
-  lazy val accentColor = for {
-    z <- zms
-    accent  <- inject[AccentColorController].accentColor(z)
-  } yield accent
-
-  lazy val message = findById[TypefaceEditText](R.id.tet__quick_reply__message)
-  lazy val layoutManager = new ViewPagerLikeLayoutManager(getContext)
-
-  lazy val adapter = new QuickReplyContentAdapter(getContext, accountId, convId)
-
-  lazy val conv = for {
+  private lazy val conv = for {
     zs <- zms
     conv <- zs.convsStorage.signal(convId)
   } yield conv
 
-  val firstVisibleItemPosition = Signal(0)
+  private val firstVisibleItemPosition = Signal(0)
 
-  lazy val counterStr = for {
+  private lazy val counterStr = for {
     unreadCount <- conv.map(_.unreadCount.messages)
     selectedPos <- firstVisibleItemPosition
   } yield (unreadCount > 1, getString(R.string.quick_reply__counter, new Integer(math.max(1, selectedPos + 1)), new Integer(unreadCount)))
 
   var subscriptions = Seq.empty[com.waz.utils.events.Subscription]
+
+  override def onCreate(savedInstanceState: Bundle): Unit = {
+    super.onCreate(savedInstanceState)
+
+    quickReplyFragment.pagedListData(convId).onUi {
+      case (PagedListWrapper(pl), isGroup) => adapter.submitList(pl, isGroup)
+    }
+  }
 
   override def onCreateView(inflater: LayoutInflater, container: ViewGroup, savedInstanceState: Bundle): View = {
     verbose("onCreateView")
